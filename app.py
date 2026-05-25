@@ -61,4 +61,5 @@ def convert_excel():
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(port=8080, host='0.0.0.0')
+    # 改為 8080，與 Zeabur 環境保持一致
+    app.run(port=8080, debug=True)
