@@ -64,7 +64,7 @@
             gap: 30px;
         }
         
-        /* 強制鎖死標準 A4 比例尺寸，超出範圍不溢出 */
+        /* 強制鎖死 A4 尺寸，超出的部分絕對隱藏 (clip) */
         .page {
             width: var(--a4-width);
             height: var(--a4-height);
@@ -100,16 +100,13 @@
             max-width: 100%;
             max-height: 100%;
             object-fit: contain;
+	    object-position:top;
         }
         .placeholder-text {
             color: #999;
             text-align: center;
             margin-top: 200px;
             width: 100%;
-        }
-        .loading-spinner {
-            color: #f39c12;
-            font-weight: bold;
         }
 
         .image-workspace {
@@ -118,10 +115,9 @@
             position: relative;
             border: 1px dashed #ccc;
             box-sizing: border-box;
-            overflow: hidden; /* 確保長圖超出第二頁邊界時會被精確裁切 */
+            overflow: hidden; /* 確保長圖超出編輯區也會被隱藏 */
         }
         
-        /* 互動圖片外包裝 */
         .draggable-wrapper {
             position: absolute;
             cursor: move;
@@ -142,7 +138,6 @@
             pointer-events: none;
         }
         
-        /* 微調拉桿 */
         .scale-ctrl {
             position: absolute;
             bottom: -20px;
@@ -188,3 +183,185 @@
     </div>
 
     <script>
+        // ==========================================
+        // 1. 上傳 Excel 並呼叫 Python 後端轉檔 (API 連線不變)
+        // ==========================================
+        document.getElementById('excel-input').addEventListener('change', async function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const page1Content = document.getElementById('page-1-content');
+            page1Content.innerHTML = `<div class="placeholder-text loading-spinner">⏳ Excel 檔案轉檔中，請稍候...</div>`;
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+         try {
+                // 🌟 智慧判斷 API 網址 🌟
+                // 如果你是直接雙擊檔案開啟 (file://)，就強制把檔案傳給本機的 8080 頻道
+                // 如果是在 Zeabur 雲端 (https://)，就自動使用雲端的相對路徑
+                let apiUrl = '/convert-excel';
+                if (window.location.protocol === 'file:' || window.location.hostname === 'localhost') {
+                    apiUrl = 'http://127.0.0.1:8080/convert-excel';
+                }
+
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) throw new Error('伺服器轉檔失敗');
+                const data = await response.json();
+                page1Content.innerHTML = `<img src="${data.image}" alt="完美報價單">`;
+                
+            } catch (error) {
+                console.error('Error:', error);
+                page1Content.innerHTML = `<div class="placeholder-text" style="color:red;">❌ 轉檔發生錯誤！請確認 Python 伺服器是否運行。</div>`;
+            }
+        });
+
+        // ==========================================
+        // 2. 圖片上傳與自動整理排版 (純前端)
+        // ==========================================
+        const workspace = document.getElementById('image-workspace');
+        let imgCount = 0;
+
+        document.getElementById('image-input').addEventListener('change', function(e) {
+            const files = e.target.files;
+            if (!files.length) return;
+
+            let startX = 20, startY = 20;
+            const defaultWidth = 200, padding = 20;
+
+            Array.from(files).forEach((file) => {
+                const reader = new FileReader();
+                reader.onload = function(event) {
+                    imgCount++;
+                    const wrapper = document.createElement('div');
+                    wrapper.classList.add('draggable-wrapper');
+                    wrapper.style.width = defaultWidth + 'px';
+                    
+                    const cols = 3; 
+                    const index = (imgCount - 1) % cols;
+                    const row = Math.floor((imgCount - 1) / cols);
+                    
+                    wrapper.style.left = (startX + index * (defaultWidth + padding)) + 'px';
+                    wrapper.style.top = (startY + row * (defaultWidth + padding)) + 'px';
+
+                    const img = document.createElement('img');
+                    img.src = event.target.result;
+                    
+                    const scaleInput = document.createElement('input');
+                    scaleInput.type = 'range';
+                    scaleInput.classList.add('scale-ctrl');
+                    scaleInput.min = '50';
+                    scaleInput.max = '600';
+                    scaleInput.value = defaultWidth;
+
+                    scaleInput.addEventListener('input', function(e) {
+                        wrapper.style.width = e.target.value + 'px';
+                    });
+
+                    wrapper.appendChild(img);
+                    wrapper.appendChild(scaleInput);
+                    workspace.appendChild(wrapper);
+
+                    makeElementInteractive(wrapper, scaleInput);
+                };
+                reader.readAsDataURL(file);
+            });
+        });
+
+        // ==========================================
+        // 3. 拖曳與滾輪縮放互動功能
+        // ==========================================
+        function makeElementInteractive(el, scaleInput) {
+            let isDragging = false;
+            let startX, startY, initialLeft, initialTop;
+
+            el.addEventListener('mousedown', function(e) {
+                if (e.target.classList.contains('scale-ctrl')) return; 
+                isDragging = true;
+                startX = e.clientX; startY = e.clientY;
+                initialLeft = parseInt(el.style.left) || 0;
+                initialTop = parseInt(el.style.top) || 0;
+                el.style.zIndex = 1000; 
+                document.addEventListener('mousemove', onMouseMove);
+                document.addEventListener('mouseup', onMouseUp);
+                e.preventDefault();
+            });
+
+            function onMouseMove(e) {
+                if (!isDragging) return;
+                el.style.left = (initialLeft + (e.clientX - startX)) + 'px';
+                el.style.top = (initialTop + (e.clientY - startY)) + 'px';
+            }
+
+            function onMouseUp() {
+                isDragging = false;
+                el.style.zIndex = 'auto';
+                document.removeEventListener('mousemove', onMouseMove);
+                document.removeEventListener('mouseup', onMouseUp);
+            }
+
+            el.addEventListener('wheel', function(e) {
+                e.preventDefault();
+                let currentWidth = parseInt(el.style.width) || 150;
+                let scaleStep = 15;
+                if (e.deltaY < 0) currentWidth += scaleStep;
+                else currentWidth = Math.max(40, currentWidth - scaleStep);
+                
+                el.style.width = currentWidth + 'px';
+                scaleInput.value = currentWidth; 
+            });
+        }
+
+        // ==========================================
+        // 4. 【全新升級】精確的分頁 PDF 匯出邏輯
+        // ==========================================
+        document.getElementById('download-pdf').addEventListener('click', async function() {
+            const btn = this;
+            const originalText = btn.innerText;
+            
+            // 防止重複點擊，並給予視覺提示
+            btn.innerText = "⏳ PDF 產出中，請稍候...";
+            btn.disabled = true;
+            
+            // 隱藏編輯用的拉桿與黑框提示字
+            document.querySelectorAll('.scale-ctrl, .page-hint').forEach(el => el.style.display = 'none');
+
+            try {
+                // 初始化 jsPDF 物件 (設定為 A4 比例像素)
+                const { jsPDF } = window.jspdf;
+                const pdf = new jsPDF({ unit: 'px', format: [800, 1130], orientation: 'portrait' });
+
+                const page1 = document.getElementById('page-1');
+                const page2 = document.getElementById('page-2');
+
+                // 核心：手動替「第一頁」精準截圖
+                const canvas1 = await html2canvas(page1, { scale: 2, useCORS: true, backgroundColor: '#ffffff' });
+                const imgData1 = canvas1.toDataURL('image/jpeg', 0.98);
+                pdf.addImage(imgData1, 'JPEG', 0, 0, 800, 1130);
+
+                // 核心：手動新增一頁，並替「第二頁」精準截圖
+                pdf.addPage();
+                const canvas2 = await html2canvas(page2, { scale: 2, useCORS: true, backgroundColor: '#ffffff' });
+                const imgData2 = canvas2.toDataURL('image/jpeg', 0.98);
+                pdf.addImage(imgData2, 'JPEG', 0, 0, 800, 1130);
+
+                // 匯出儲存
+                pdf.save('Quotation_Merged_Result.pdf');
+
+            } catch (error) {
+                console.error("PDF 匯出錯誤:", error);
+                alert("匯出 PDF 時發生錯誤！");
+            } finally {
+                // 恢復 UI 顯示與按鈕狀態
+                document.querySelectorAll('.scale-ctrl, .page-hint').forEach(el => el.style.display = 'block');
+                btn.innerText = originalText;
+                btn.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>
