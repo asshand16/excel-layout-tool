@@ -1,17 +1,19 @@
 import os
-import subprocess
+import io
 import base64
 import platform
+import subprocess
 import tempfile
 import zipfile
 import xml.etree.ElementTree as ET
+from typing import List
 
 import openpyxl
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 from pdf2image import convert_from_path
-from PIL import Image, ImageChops, ImageDraw
+from PIL import Image, ImageChops
 
 app = Flask(__name__, static_folder='.')
 CORS(app)
@@ -20,7 +22,6 @@ BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 UPLOAD_FOLDER = os.path.join(BASE_DIR, 'temp')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# 環境偵測
 if platform.system() == 'Windows':
     LIBREOFFICE_PATH = r"C:\Program Files\LibreOffice\program\soffice.exe"
     POPPLER_PATH = r"C:\poppler\library\bin"
@@ -29,10 +30,27 @@ else:
     POPPLER_PATH = None
 
 
+def str_to_bool(value, default=False):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {'1', 'true', 'yes', 'y', 'on'}
+
+
+def image_to_data_url(img: Image.Image, quality: int = 95) -> str:
+    if img.mode != 'RGB':
+        img = img.convert('RGB')
+    buf = io.BytesIO()
+    img.save(buf, format='JPEG', quality=quality)
+    encoded = base64.b64encode(buf.getvalue()).decode('utf-8')
+    return 'data:image/jpeg;base64,' + encoded
+
+
 def remove_print_titles_by_xml(xlsx_path: str) -> None:
     """
     直接修改 xlsx 內部的 xl/workbook.xml，穩定移除 _xlnm.Print_Titles。
-    Windows 下暫存檔必須建立在同一個磁碟，否則 os.replace 可能出現 WinError 17。
+    Windows 下暫存檔要建立在同一個磁碟，避免 os.replace 出現 WinError 17。
     """
     ns = {'main': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
     source_dir = os.path.dirname(os.path.abspath(xlsx_path))
@@ -78,26 +96,20 @@ def remove_print_titles_by_xml(xlsx_path: str) -> None:
 
 def optimize_excel_for_printing(file_path: str) -> None:
     """
-    修正 Excel 列印設定，避免：
-    1. Print Titles 重複列印造成 PDF 底部出現看似多出的欄位
-    2. Header/Footer 造成奇怪字元或空白
-    3. scale 與 fitToWidth/fitToHeight 互相衝突
-
-    注意：
-    - 保留原本 print_area（若使用者有設定）
-    - 不主動動 hidden rows / hidden cols
+    通用型列印優化：
+    1. 移除 Print_Titles，避免每頁重複表頭
+    2. 清空 header/footer，避免雜訊
+    3. 保留多頁，不強制壓成單頁
     """
     wb = openpyxl.load_workbook(file_path)
 
     for ws in wb.worksheets:
-        # 清除列印標題（表層）
         try:
             ws.print_title_rows = None
             ws.print_title_cols = None
         except Exception as e:
             print(f'⚠️ 清除 print title 屬性失敗: {e}')
 
-        # 清除頁首頁尾，避免雜訊
         for header_footer in [
             ws.oddHeader, ws.oddFooter,
             ws.evenHeader, ws.evenFooter,
@@ -111,7 +123,6 @@ def optimize_excel_for_printing(file_path: str) -> None:
                 if hasattr(header_footer, 'right'):
                     header_footer.right.text = None
 
-        # 清掉 scale，改用 fitToWidth / fitToHeight
         ws.page_setup.scale = None
         ws.page_setup.fitToWidth = 1
         ws.page_setup.fitToHeight = 0
@@ -124,52 +135,101 @@ def optimize_excel_for_printing(file_path: str) -> None:
 
     wb.save(file_path)
     wb.close()
-
-    # 底層 XML 再移除一次，確保 _xlnm.Print_Titles 真的不在
     remove_print_titles_by_xml(file_path)
 
 
-def clean_and_trim(img: Image.Image) -> Image.Image:
-    """只裁掉上下純白，保留左右完整寬度。"""
+def get_content_bbox(img: Image.Image):
+    if img.mode != 'RGB':
+        img = img.convert('RGB')
+    bg = Image.new('RGB', img.size, (255, 255, 255))
+    diff = ImageChops.difference(img, bg)
+    return diff.getbbox()
+
+
+def clean_and_trim(img: Image.Image, vertical_padding: int = 18) -> Image.Image:
+    """
+    給 pages[] 單頁顯示用：
+    保留較舒服的上下空白。
+    """
     if img.mode != 'RGB':
         img = img.convert('RGB')
 
-    bg = Image.new(img.mode, img.size, (255, 255, 255))
-    diff = ImageChops.difference(img, bg)
-    bbox = diff.getbbox()
+    bbox = get_content_bbox(img)
+    if not bbox:
+        return img
 
-    if bbox:
-        upper = max(0, bbox[1] - 5)
-        lower = min(img.size[1], bbox[3] + 5)
-        return img.crop((0, upper, img.size[0], lower))
+    upper = max(0, bbox[1] - vertical_padding)
+    lower = min(img.size[1], bbox[3] + vertical_padding)
 
-    return img
+    if upper <= 2 and lower >= img.size[1] - 2:
+        return img
+
+    return img.crop((0, upper, img.size[0], lower))
 
 
-def combine_images_vertically(images, gap=24, add_separator=True):
+def crop_for_merge(img: Image.Image, keep_top: int, keep_bottom: int) -> Image.Image:
     """
-    多頁 PDF 合併成一張長圖，頁面間加入分隔線，
-    避免第 2 頁表頭看起來像第 1 頁底部多出欄位。
+    給 merged_image 合併長圖用：
+    交界處只保留極少空白，消除 PDF 跨頁白帶。
+    """
+    if img.mode != 'RGB':
+        img = img.convert('RGB')
+
+    bbox = get_content_bbox(img)
+    if not bbox:
+        return img
+
+    upper = max(0, bbox[1] - max(0, keep_top))
+    lower = min(img.size[1], bbox[3] + max(0, keep_bottom))
+    return img.crop((0, upper, img.size[0], lower))
+
+
+def build_merge_ready_pages(images: List[Image.Image]) -> List[Image.Image]:
+    """
+    針對合併長圖的頁面做專用裁切：
+    - 第一頁：上留 18，下留 2
+    - 中間頁：上留 2，下留 2
+    - 最後一頁：上留 2，下留 18
+    """
+    if len(images) == 1:
+        return [clean_and_trim(images[0], vertical_padding=18)]
+
+    result = []
+    for i, img in enumerate(images):
+        if i == 0:
+            result.append(crop_for_merge(img, keep_top=0, keep_bottom=0))
+        elif i == len(images) - 1:
+            result.append(crop_for_merge(img, keep_top=0, keep_bottom=0))
+        else:
+            result.append(crop_for_merge(img, keep_top=0, keep_bottom=0))
+    return result
+
+
+def combine_images_vertically(images: List[Image.Image]) -> Image.Image:
+    """
+    多頁合併成單張長圖：
+    - 不畫線
+    - 不留 gap
+    - 不 overlap
+    真正消除空隙靠的是 merge 前專用裁切。
     """
     if len(images) == 1:
         return images[0]
 
-    max_width = max(img.size[0] for img in images)
-    total_height = sum(img.size[1] for img in images) + gap * (len(images) - 1)
+    normalized = []
+    for img in images:
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        normalized.append(img)
 
+    max_width = max(img.size[0] for img in normalized)
+    total_height = sum(img.size[1] for img in normalized)
     canvas = Image.new('RGB', (max_width, total_height), (255, 255, 255))
-    draw = ImageDraw.Draw(canvas)
 
     y = 0
-    for index, img in enumerate(images):
+    for img in normalized:
         canvas.paste(img, (0, y))
         y += img.size[1]
-
-        if index < len(images) - 1:
-            if add_separator:
-                line_y = y + gap // 2
-                draw.line((40, line_y, max_width - 40, line_y), fill=(200, 200, 200), width=2)
-            y += gap
 
     return canvas
 
@@ -191,16 +251,15 @@ def convert_excel():
         return jsonify({'error': '檔名無效'}), 400
 
     if filename.lower().endswith('.xls'):
-        return jsonify({'error': '【格式太舊】請在 Excel 中將檔案另存新檔為 .xlsx 後再上傳！'}), 400
+        return jsonify({'error': '【格式太舊】請先另存為 .xlsx 再上傳！'}), 400
+
+    merge_pages = str_to_bool(request.form.get('merge_pages'), default=True)
 
     excel_path = os.path.join(UPLOAD_FOLDER, filename)
     pdf_path = os.path.join(UPLOAD_FOLDER, filename.rsplit('.', 1)[0] + '.pdf')
-    img_path = os.path.join(UPLOAD_FOLDER, filename.rsplit('.', 1)[0] + '_result.jpg')
 
     try:
         file.save(excel_path)
-
-        # 預處理失敗就直接報錯，不可吞掉
         optimize_excel_for_printing(excel_path)
 
         result = subprocess.run(
@@ -229,34 +288,47 @@ def convert_excel():
         if not images:
             raise RuntimeError('PDF 已生成，但無法轉成圖片。')
 
-        trimmed_images = [clean_and_trim(img) for img in images]
-        final_image = combine_images_vertically(trimmed_images, gap=24, add_separator=True)
-        final_image.save(img_path, 'JPEG', quality=95)
+        # pages[]：保留舒適邊界
+        page_preview_images = [clean_and_trim(img, vertical_padding=18) for img in images]
+        page_data_urls = [image_to_data_url(img) for img in page_preview_images]
 
-        with open(img_path, 'rb') as img_file:
-            encoded_string = base64.b64encode(img_file.read()).decode('utf-8')
+        response = {
+            'message': '轉檔成功',
+            'pages': page_data_urls,
+            'page_count': len(page_data_urls),
+            'merge_pages': merge_pages,
+        }
 
-        return jsonify({
-            'image': 'data:image/jpeg;base64,' + encoded_string,
-            'pages': len(images),
-            'message': '轉檔成功'
-        })
+        if len(page_data_urls) == 1:
+            response['image'] = page_data_urls[0]
+            response['notice'] = '單頁輸出。'
+        else:
+            if merge_pages:
+                merge_ready_images = build_merge_ready_pages(images)
+                merged = combine_images_vertically(merge_ready_images)
+                merged_data_url = image_to_data_url(merged)
+                response['merged_image'] = merged_data_url
+                response['image'] = merged_data_url
+            else:
+                response['image'] = page_data_urls[0]
+
+            response['notice'] = '此檔案為多頁內容。正式顯示請使用 pages[] 分頁渲染；image/merged_image 僅為相容舊前端或預覽。'
+
+        return jsonify(response)
 
     except subprocess.CalledProcessError as e:
         print('\n❌ LibreOffice 轉檔錯誤')
         print('returncode:', e.returncode)
         print('stdout:', e.stdout)
         print('stderr:', e.stderr)
-        return jsonify({
-            'error': f'LibreOffice 轉檔失敗: {e.stderr or e.stdout or str(e)}'
-        }), 500
+        return jsonify({'error': f'LibreOffice 轉檔失敗: {e.stderr or e.stdout or str(e)}'}), 500
 
     except Exception as e:
         print(f'\n❌ 轉檔錯誤: {e}\n')
         return jsonify({'error': str(e)}), 500
 
     finally:
-        for path in [excel_path, pdf_path, img_path]:
+        for path in [excel_path, pdf_path]:
             try:
                 if os.path.exists(path):
                     os.remove(path)
