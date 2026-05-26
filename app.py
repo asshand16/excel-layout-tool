@@ -38,7 +38,7 @@ def str_to_bool(value, default=False):
     return str(value).strip().lower() in {'1', 'true', 'yes', 'y', 'on'}
 
 
-def image_to_data_url(img: Image.Image, quality: int = 95) -> str:
+def image_to_data_url(img: Image.Image, quality: int = 80) -> str:
     if img.mode != 'RGB':
         img = img.convert('RGB')
     buf = io.BytesIO()
@@ -281,9 +281,9 @@ def convert_excel():
             raise FileNotFoundError(f'PDF 轉檔失敗，找不到輸出檔案: {pdf_path}')
 
         if POPPLER_PATH:
-            images = convert_from_path(pdf_path, dpi=300, poppler_path=POPPLER_PATH)
+            images = convert_from_path(pdf_path, dpi=180, poppler_path=POPPLER_PATH)
         else:
-            images = convert_from_path(pdf_path, dpi=300)
+            images = convert_from_path(pdf_path, dpi=180)
 
         if not images:
             raise RuntimeError('PDF 已生成，但無法轉成圖片。')
