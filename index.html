@@ -1,10 +1,11 @@
 <!DOCTYPE html>
 <html lang="zh-TW">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Excel 完美報價單與圖片排版工具</title>
-    
+
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 
@@ -12,7 +13,10 @@
         :root {
             --a4-width: 800px;
             --a4-height: 1130px;
+            --excel-theme: #f39c12;
+            --img-theme: #17a2b8;
         }
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
             background-color: #f0f2f5;
@@ -20,17 +24,22 @@
             padding: 20px;
             color: #333;
         }
+
         .control-panel {
             background: #fff;
-            padding: 20px;
+            padding: 15px 20px;
             border-radius: 8px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
             margin-bottom: 20px;
             display: flex;
             gap: 15px;
             flex-wrap: wrap;
             align-items: center;
+            position: sticky;
+            top: 0;
+            z-index: 2000;
         }
+
         .btn {
             background-color: #007bff;
             color: white;
@@ -40,22 +49,40 @@
             cursor: pointer;
             font-size: 14px;
             transition: background 0.2s;
+            height: 42px;
         }
-        .btn:hover { background-color: #0056b3; }
-        .btn-success { background-color: #28a745; }
-        .btn-success:hover { background-color: #218838; }
-        .btn:disabled { background-color: #6c757d; cursor: not-allowed; }
-        
-        input[type="file"] { display: none; }
-        .file-label {
-            background-color: #6c757d;
+
+        .btn:hover {
+            background-color: #0056b3;
+        }
+
+        .btn-success {
+            background-color: #28a745;
+        }
+
+        .btn-success:hover {
+            background-color: #218838;
+        }
+
+        input[type="file"] {
+            display: none;
+        }
+
+        .normal-label {
             color: white;
             padding: 10px 15px;
             border-radius: 4px;
             cursor: pointer;
             font-size: 14px;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            height: 22px;
         }
-        .file-label:hover { background-color: #5a6268; }
+
+        .normal-label:hover {
+            filter: brightness(0.9);
+        }
 
         .pdf-container {
             display: flex;
@@ -63,30 +90,55 @@
             align-items: center;
             gap: 30px;
         }
-        
-        /* 強制鎖死 A4 尺寸，超出的部分絕對隱藏 (clip) */
+
         .page {
             width: var(--a4-width);
             height: var(--a4-height);
             min-height: var(--a4-height);
             max-height: var(--a4-height);
             background: white;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
             position: relative;
             box-sizing: border-box;
             padding: 40px;
-            overflow: hidden; 
+            overflow: hidden;
+            transition: all 0.3s ease;
+            border: 3px solid transparent;
         }
+
         .page-hint {
             position: absolute;
             top: 10px;
             left: 10px;
-            background: rgba(0,0,0,0.6);
+            background: rgba(0, 0, 0, 0.6);
             color: white;
             padding: 2px 8px;
             font-size: 12px;
             border-radius: 3px;
             z-index: 10;
+        }
+
+        #page-1.dragover-active {
+            border: 3px dashed var(--excel-theme);
+            background-color: rgba(243, 156, 18, 0.03);
+            transform: scale(1.01);
+            box-shadow: 0 8px 25px rgba(243, 156, 18, 0.15);
+        }
+
+        #page-1.dragover-active #page-1-content {
+            opacity: 0.5;
+        }
+
+        #page-2.dragover-active {
+            border: 3px dashed var(--img-theme);
+            background-color: rgba(23, 162, 184, 0.03);
+            transform: scale(1.01);
+            box-shadow: 0 8px 25px rgba(23, 162, 184, 0.15);
+        }
+
+        #page-2.dragover-active .image-workspace {
+            opacity: 0.5;
+            border-color: var(--img-theme);
         }
 
         #page-1-content {
@@ -95,18 +147,20 @@
             display: flex;
             justify-content: center;
             align-items: flex-start;
+            position: relative;
         }
-        #page-1-content img {
-            max-width: 100%;
-            max-height: 100%;
-            object-fit: contain;
-	    object-position:top;
-        }
+
         .placeholder-text {
             color: #999;
             text-align: center;
             margin-top: 200px;
             width: 100%;
+            pointer-events: none;
+        }
+
+        .loading-spinner {
+            color: var(--excel-theme);
+            font-weight: bold;
         }
 
         .image-workspace {
@@ -115,9 +169,10 @@
             position: relative;
             border: 1px dashed #ccc;
             box-sizing: border-box;
-            overflow: hidden; /* 確保長圖超出編輯區也會被隱藏 */
+            overflow: hidden;
+            transition: all 0.3s ease;
         }
-        
+
         .draggable-wrapper {
             position: absolute;
             cursor: move;
@@ -126,10 +181,12 @@
             border: 1px solid transparent;
             padding: 5px;
         }
+
         .draggable-wrapper:hover {
             border: 1px dashed #007bff;
-            background: rgba(0,123,255,0.05);
+            background: rgba(0, 123, 255, 0.05);
         }
+
         .draggable-wrapper img {
             width: 100%;
             height: 100%;
@@ -137,7 +194,7 @@
             display: block;
             pointer-events: none;
         }
-        
+
         .scale-ctrl {
             position: absolute;
             bottom: -20px;
@@ -146,49 +203,58 @@
             width: 80px;
             display: none;
         }
+
         .draggable-wrapper:hover .scale-ctrl {
             display: block;
         }
     </style>
 </head>
+
 <body>
 
     <div class="control-panel">
-        <label class="file-label" style="background-color: #f39c12;">
-            1. 上傳 Excel 檔案 (交由後端轉為完美圖檔)
-            <input type="file" id="excel-input" accept=".xlsx, .xls">
+        <label class="normal-label" style="background-color: var(--excel-theme);">
+            1. 點擊上傳 Excel 檔案
+            <input type="file" id="excel-input" accept=".xlsx">
         </label>
-        
-        <label class="file-label" style="background-color: #17a2b8;">
-            2. 上傳參考圖片至第二頁
+
+        <label class="normal-label" style="background-color: var(--img-theme);">
+            2. 點擊上傳參考圖片
             <input type="file" id="image-input" accept="image/*" multiple>
         </label>
 
         <button class="btn btn-success" id="download-pdf">3. 下載轉成 PDF</button>
-        <span style="font-size: 13px; color: #666; margin-left:10px;">💡 提示：在第二頁的圖片上使用<b>滑鼠滾輪</b>可等比縮放，按住可拖曳位置。</span>
+        <span style="font-size: 13px; color: #666; margin-left:10px;">💡 提示：支援檔案拖曳。<b>請確保 Excel 為較新的 .xlsx
+                格式</b>。</span>
     </div>
 
     <div class="pdf-container" id="pdf-content">
         <div class="page" id="page-1">
-            <div class="page-hint">第一頁：Excel 轉檔結果</div>
+            <div class="page-hint">第一頁：Excel 轉檔結果 (拖曳 Excel 檔案至此)</div>
             <div id="page-1-content">
-                <div class="placeholder-text">請由上方按鈕上傳 Excel 檔案，系統將自動為您轉檔不跑版</div>
+                <div class="placeholder-text">
+                    <img src="https://cdn-icons-png.flaticon.com/512/281/281760.png"
+                        style="width:64px; opacity:0.3; margin-bottom:15px; pointer-events:none;"><br>
+                    請<b>拖曳 Excel 檔案 (.xlsx)</b> 至此空白區，<br>或由上方按鈕上傳。
+                </div>
             </div>
         </div>
 
         <div class="page" id="page-2">
-            <div class="page-hint">第二頁：圖片排版編輯區（可自由拖曳、滾輪縮放）</div>
+            <div class="page-hint">第二頁：圖片排版編輯區 (拖曳 圖片檔案 至此)</div>
             <div class="image-workspace" id="image-workspace"></div>
         </div>
     </div>
 
     <script>
-        // ==========================================
-        // 1. 上傳 Excel 並呼叫 Python 後端轉檔 (API 連線不變)
-        // ==========================================
-        document.getElementById('excel-input').addEventListener('change', async function(e) {
-            const file = e.target.files[0];
+        async function uploadExcel(file) {
             if (!file) return;
+
+            // 🌟 強制阻擋 .xls 格式並跳出警告 🌟
+            if (!file.name.match(/\.(xlsx)$/i)) {
+                alert("❌ 【格式太舊】系統已全面升級！\n\n請打開您的 Excel 報價單，選擇「另存新檔」，將格式改為最新的 .xlsx 後再上傳。\n(舊版 .xls 格式無法自動清除幽靈標題列)");
+                return;
+            }
 
             const page1Content = document.getElementById('page-1-content');
             page1Content.innerHTML = `<div class="placeholder-text loading-spinner">⏳ Excel 檔案轉檔中，請稍候...</div>`;
@@ -196,12 +262,9 @@
             const formData = new FormData();
             formData.append('file', file);
 
-         try {
-                // 🌟 智慧判斷 API 網址 🌟
-                // 如果你是直接雙擊檔案開啟 (file://)，就強制把檔案傳給本機的 8080 頻道
-                // 如果是在 Zeabur 雲端 (https://)，就自動使用雲端的相對路徑
+            try {
                 let apiUrl = '/convert-excel';
-                if (window.location.protocol === 'file:' || window.location.hostname === 'localhost') {
+                if (window.location.protocol === 'file:' || window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
                     apiUrl = 'http://127.0.0.1:8080/convert-excel';
                 }
 
@@ -210,47 +273,56 @@
                     body: formData
                 });
 
-                if (!response.ok) throw new Error('伺服器轉檔失敗');
+                // 🌟 正確解析後端的錯誤訊息並顯示 🌟
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || '伺服器轉檔失敗');
+                }
+
                 const data = await response.json();
-                page1Content.innerHTML = `<img src="${data.image}" alt="完美報價單">`;
-                
+                page1Content.innerHTML = `<img src="${data.image}" alt="完美報價單" style="max-width: 100%; max-height: 100%; width: auto; height: auto; pointer-events: none;">`;
+
             } catch (error) {
                 console.error('Error:', error);
-                page1Content.innerHTML = `<div class="placeholder-text" style="color:red;">❌ 轉檔發生錯誤！請確認 Python 伺服器是否運行。</div>`;
+                page1Content.innerHTML = `<div class="placeholder-text" style="color:red;">❌ ${error.message}</div>`;
             }
-        });
+        }
 
-        // ==========================================
-        // 2. 圖片上傳與自動整理排版 (純前端)
-        // ==========================================
         const workspace = document.getElementById('image-workspace');
         let imgCount = 0;
 
-        document.getElementById('image-input').addEventListener('change', function(e) {
-            const files = e.target.files;
-            if (!files.length) return;
+        function handleImageFiles(files) {
+            if (!files || !files.length) return;
+
+            const hasInvalidFile = Array.from(files).some(file => !file.type.startsWith('image/'));
+            if (hasInvalidFile) {
+                alert("❌ 第二頁只能放置圖片檔案 (JPG, PNG 等)！");
+                return;
+            }
 
             let startX = 20, startY = 20;
             const defaultWidth = 200, padding = 20;
 
             Array.from(files).forEach((file) => {
+                if (!file.type.startsWith('image/')) return;
+
                 const reader = new FileReader();
-                reader.onload = function(event) {
+                reader.onload = function (event) {
                     imgCount++;
                     const wrapper = document.createElement('div');
                     wrapper.classList.add('draggable-wrapper');
                     wrapper.style.width = defaultWidth + 'px';
-                    
-                    const cols = 3; 
+
+                    const cols = 3;
                     const index = (imgCount - 1) % cols;
                     const row = Math.floor((imgCount - 1) / cols);
-                    
+
                     wrapper.style.left = (startX + index * (defaultWidth + padding)) + 'px';
                     wrapper.style.top = (startY + row * (defaultWidth + padding)) + 'px';
 
                     const img = document.createElement('img');
                     img.src = event.target.result;
-                    
+
                     const scaleInput = document.createElement('input');
                     scaleInput.type = 'range';
                     scaleInput.classList.add('scale-ctrl');
@@ -258,7 +330,7 @@
                     scaleInput.max = '600';
                     scaleInput.value = defaultWidth;
 
-                    scaleInput.addEventListener('input', function(e) {
+                    scaleInput.addEventListener('input', function (e) {
                         wrapper.style.width = e.target.value + 'px';
                     });
 
@@ -270,22 +342,54 @@
                 };
                 reader.readAsDataURL(file);
             });
+        }
+
+        document.getElementById('excel-input').addEventListener('change', (e) => uploadExcel(e.target.files[0]));
+        document.getElementById('image-input').addEventListener('change', (e) => handleImageFiles(e.target.files));
+
+        const page1Dropzone = document.getElementById('page-1');
+        const page2Dropzone = document.getElementById('page-2');
+
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            page1Dropzone.addEventListener(eventName, (e) => e.preventDefault());
+            page2Dropzone.addEventListener(eventName, (e) => e.preventDefault());
         });
 
-        // ==========================================
-        // 3. 拖曳與滾輪縮放互動功能
-        // ==========================================
+        ['dragenter', 'dragover'].forEach(eventName => {
+            page1Dropzone.addEventListener(eventName, () => page1Dropzone.classList.add('dragover-active'));
+        });
+        ['dragleave', 'drop'].forEach(eventName => {
+            page1Dropzone.addEventListener(eventName, () => page1Dropzone.classList.remove('dragover-active'));
+        });
+
+        page1Dropzone.addEventListener('drop', (e) => {
+            const files = e.dataTransfer.files;
+            if (files.length > 0) uploadExcel(files[0]);
+        });
+
+        ['dragenter', 'dragover'].forEach(eventName => {
+            page2Dropzone.addEventListener(eventName, () => page2Dropzone.classList.add('dragover-active'));
+        });
+        ['dragleave', 'drop'].forEach(eventName => {
+            page2Dropzone.addEventListener(eventName, () => page2Dropzone.classList.remove('dragover-active'));
+        });
+
+        page2Dropzone.addEventListener('drop', (e) => {
+            const files = e.dataTransfer.files;
+            if (files.length > 0) handleImageFiles(files);
+        });
+
         function makeElementInteractive(el, scaleInput) {
             let isDragging = false;
             let startX, startY, initialLeft, initialTop;
 
-            el.addEventListener('mousedown', function(e) {
-                if (e.target.classList.contains('scale-ctrl')) return; 
+            el.addEventListener('mousedown', function (e) {
+                if (e.target.classList.contains('scale-ctrl')) return;
                 isDragging = true;
                 startX = e.clientX; startY = e.clientY;
                 initialLeft = parseInt(el.style.left) || 0;
                 initialTop = parseInt(el.style.top) || 0;
-                el.style.zIndex = 1000; 
+                el.style.zIndex = 1000;
                 document.addEventListener('mousemove', onMouseMove);
                 document.addEventListener('mouseup', onMouseUp);
                 e.preventDefault();
@@ -304,59 +408,49 @@
                 document.removeEventListener('mouseup', onMouseUp);
             }
 
-            el.addEventListener('wheel', function(e) {
+            el.addEventListener('wheel', function (e) {
                 e.preventDefault();
                 let currentWidth = parseInt(el.style.width) || 150;
                 let scaleStep = 15;
                 if (e.deltaY < 0) currentWidth += scaleStep;
                 else currentWidth = Math.max(40, currentWidth - scaleStep);
-                
+
                 el.style.width = currentWidth + 'px';
-                scaleInput.value = currentWidth; 
+                scaleInput.value = currentWidth;
             });
         }
 
-        // ==========================================
-        // 4. 【全新升級】精確的分頁 PDF 匯出邏輯
-        // ==========================================
-        document.getElementById('download-pdf').addEventListener('click', async function() {
+        document.getElementById('download-pdf').addEventListener('click', async function () {
             const btn = this;
             const originalText = btn.innerText;
-            
-            // 防止重複點擊，並給予視覺提示
+
             btn.innerText = "⏳ PDF 產出中，請稍候...";
             btn.disabled = true;
-            
-            // 隱藏編輯用的拉桿與黑框提示字
+
             document.querySelectorAll('.scale-ctrl, .page-hint').forEach(el => el.style.display = 'none');
 
             try {
-                // 初始化 jsPDF 物件 (設定為 A4 比例像素)
                 const { jsPDF } = window.jspdf;
                 const pdf = new jsPDF({ unit: 'px', format: [800, 1130], orientation: 'portrait' });
 
                 const page1 = document.getElementById('page-1');
                 const page2 = document.getElementById('page-2');
 
-                // 核心：手動替「第一頁」精準截圖
                 const canvas1 = await html2canvas(page1, { scale: 2, useCORS: true, backgroundColor: '#ffffff' });
                 const imgData1 = canvas1.toDataURL('image/jpeg', 0.98);
                 pdf.addImage(imgData1, 'JPEG', 0, 0, 800, 1130);
 
-                // 核心：手動新增一頁，並替「第二頁」精準截圖
                 pdf.addPage();
                 const canvas2 = await html2canvas(page2, { scale: 2, useCORS: true, backgroundColor: '#ffffff' });
                 const imgData2 = canvas2.toDataURL('image/jpeg', 0.98);
                 pdf.addImage(imgData2, 'JPEG', 0, 0, 800, 1130);
 
-                // 匯出儲存
                 pdf.save('Quotation_Merged_Result.pdf');
 
             } catch (error) {
                 console.error("PDF 匯出錯誤:", error);
                 alert("匯出 PDF 時發生錯誤！");
             } finally {
-                // 恢復 UI 顯示與按鈕狀態
                 document.querySelectorAll('.scale-ctrl, .page-hint').forEach(el => el.style.display = 'block');
                 btn.innerText = originalText;
                 btn.disabled = false;
@@ -364,4 +458,5 @@
         });
     </script>
 </body>
+
 </html>
