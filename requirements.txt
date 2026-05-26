@@ -4,3 +4,4 @@ pdf2image
 gunicorn
 Pillow
 werkzeug
+openpyxl
