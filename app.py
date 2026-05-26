@@ -6,9 +6,6 @@ import subprocess
 import tempfile
 import zipfile
 import xml.etree.ElementTree as ET
-import threading
-import atexit
-import glob
 from typing import List
 
 import openpyxl
@@ -32,28 +29,6 @@ else:
     LIBREOFFICE_PATH = '/usr/bin/soffice'
     POPPLER_PATH = None
 
-# ===== 優化 1：並發控制 =====
-MAX_CONCURRENT_CONVERSIONS = 1
-conversion_semaphore = threading.Semaphore(MAX_CONCURRENT_CONVERSIONS)
-
-# ===== 優化 2：定時清理臨時文件 =====
-def cleanup_temp_files():
-    """在應用退出時清理所有臨時文件"""
-    try:
-        for temp_file in glob.glob(os.path.join(UPLOAD_FOLDER, '*')):
-            try:
-                if os.path.isfile(temp_file):
-                    os.remove(temp_file)
-                elif os.path.isdir(temp_file):
-                    import shutil
-                    shutil.rmtree(temp_file)
-            except Exception as e:
-                print(f"清理文件失敗 {temp_file}: {e}")
-    except Exception as e:
-        print(f"清理臨時文件夾失敗: {e}")
-
-atexit.register(cleanup_temp_files)
-
 
 def str_to_bool(value, default=False):
     if value is None:
@@ -63,9 +38,7 @@ def str_to_bool(value, default=False):
     return str(value).strip().lower() in {'1', 'true', 'yes', 'y', 'on'}
 
 
-# ===== 優化 3：降低圖片質量 =====
-def image_to_data_url(img: Image.Image, quality: int = 75) -> str:
-    """質量從 95 降低到 75，節省記憶體和傳輸"""
+def image_to_data_url(img: Image.Image, quality: int = 95) -> str:
     if img.mode != 'RGB':
         img = img.convert('RGB')
     buf = io.BytesIO()
@@ -87,43 +60,85 @@ def remove_print_titles_by_xml(xlsx_path: str) -> None:
     try:
         with zipfile.ZipFile(xlsx_path, 'r') as zin, zipfile.ZipFile(tmp_xlsx, 'w', zipfile.ZIP_DEFLATED) as zout:
             for item in zin.infolist():
+                data = zin.read(item.filename)
+
                 if item.filename == 'xl/workbook.xml':
-                    data = zin.read(item.filename)
                     root = ET.fromstring(data)
-                    for defined_name in root.findall('.//main:definedName', ns):
-                        if defined_name.get('name') == '_xlnm.Print_Titles':
-                            root.remove(defined_name)
-                    new_data = ET.tostring(root, encoding='utf-8')
-                    zout.writestr(item, new_data)
-                else:
-                    zout.writestr(item, zin.read(item.filename))
-    except Exception as e:
-        print(f"移除列印標題失敗: {e}")
+                    defined_names = root.find('main:definedNames', ns)
+
+                    if defined_names is not None:
+                        removed = []
+                        for dn in list(defined_names):
+                            name = dn.attrib.get('name', '')
+                            if name == '_xlnm.Print_Titles':
+                                removed.append(name)
+                                defined_names.remove(dn)
+
+                        if len(defined_names) == 0:
+                            root.remove(defined_names)
+
+                        if removed:
+                            print(f'✅ 已從 workbook.xml 移除: {removed}')
+
+                    data = ET.tostring(root, encoding='utf-8', xml_declaration=True)
+
+                zout.writestr(item, data)
+
+        os.replace(tmp_xlsx, xlsx_path)
+
     finally:
         if os.path.exists(tmp_xlsx):
             try:
-                os.replace(tmp_xlsx, xlsx_path)
-            except Exception as e:
-                print(f"替換文件失敗: {e}")
+                os.remove(tmp_xlsx)
+            except Exception:
+                pass
 
 
 def optimize_excel_for_printing(file_path: str) -> None:
-    """優化 Excel 文件以供列印"""
-    try:
-        wb = openpyxl.load_workbook(file_path)
-        for ws in wb.sheetnames:
-            sheet = wb[ws]
-            sheet.page_setup.paperSize = sheet.PAPERSIZE_A4
-            sheet.page_setup.orientation = 'portrait'
-            sheet.print_options.horizontalCentered = True
-        wb.save(file_path)
-        remove_print_titles_by_xml(file_path)
-    except Exception as e:
-        print(f"優化 Excel 失敗: {e}")
+    """
+    通用型列印優化：
+    1. 移除 Print_Titles，避免每頁重複表頭
+    2. 清空 header/footer，避免雜訊
+    3. 保留多頁，不強制壓成單頁
+    """
+    wb = openpyxl.load_workbook(file_path)
+
+    for ws in wb.worksheets:
+        try:
+            ws.print_title_rows = None
+            ws.print_title_cols = None
+        except Exception as e:
+            print(f'⚠️ 清除 print title 屬性失敗: {e}')
+
+        for header_footer in [
+            ws.oddHeader, ws.oddFooter,
+            ws.evenHeader, ws.evenFooter,
+            ws.firstHeader, ws.firstFooter,
+        ]:
+            if header_footer:
+                if hasattr(header_footer, 'left'):
+                    header_footer.left.text = None
+                if hasattr(header_footer, 'center'):
+                    header_footer.center.text = None
+                if hasattr(header_footer, 'right'):
+                    header_footer.right.text = None
+
+        ws.page_setup.scale = None
+        ws.page_setup.fitToWidth = 1
+        ws.page_setup.fitToHeight = 0
+
+        if ws.sheet_properties.pageSetUpPr is None:
+            from openpyxl.worksheet.properties import PageSetupProperties
+            ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+        else:
+            ws.sheet_properties.pageSetUpPr.fitToPage = True
+
+    wb.save(file_path)
+    wb.close()
+    remove_print_titles_by_xml(file_path)
 
 
 def get_content_bbox(img: Image.Image):
-    """獲取圖片內容邊界框"""
     if img.mode != 'RGB':
         img = img.convert('RGB')
     bg = Image.new('RGB', img.size, (255, 255, 255))
@@ -195,20 +210,28 @@ def combine_images_vertically(images: List[Image.Image]) -> Image.Image:
     多頁合併成單張長圖：
     - 不畫線
     - 不留 gap
+    - 不 overlap
+    真正消除空隙靠的是 merge 前專用裁切。
     """
-    if not images:
-        return None
+    if len(images) == 1:
+        return images[0]
 
-    total_height = sum(img.height for img in images)
-    max_width = max(img.width for img in images)
-
-    combined = Image.new('RGB', (max_width, total_height), (255, 255, 255))
-    y_offset = 0
+    normalized = []
     for img in images:
-        combined.paste(img, (0, y_offset))
-        y_offset += img.height
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        normalized.append(img)
 
-    return combined
+    max_width = max(img.size[0] for img in normalized)
+    total_height = sum(img.size[1] for img in normalized)
+    canvas = Image.new('RGB', (max_width, total_height), (255, 255, 255))
+
+    y = 0
+    for img in normalized:
+        canvas.paste(img, (0, y))
+        y += img.size[1]
+
+    return canvas
 
 
 @app.route('/')
@@ -216,66 +239,102 @@ def index():
     return send_from_directory('.', 'index.html')
 
 
-@app.route('/convert', methods=['POST'])
+@app.route('/convert-excel', methods=['POST'])
 def convert_excel():
-    """
-    ===== 優化 4：添加並發控制和超時 =====
-    """
-    # 獲取並發鎖
-    if not conversion_semaphore.acquire(blocking=False):
-        return jsonify({'error': '伺服器忙碌，請稍後重試'}), 503
+    if 'file' not in request.files:
+        return jsonify({'error': '沒有上傳檔案'}), 400
+
+    file = request.files['file']
+    filename = secure_filename(file.filename)
+
+    if not filename:
+        return jsonify({'error': '檔名無效'}), 400
+
+    if filename.lower().endswith('.xls'):
+        return jsonify({'error': '【格式太舊】請先另存為 .xlsx 再上傳！'}), 400
+
+    merge_pages = str_to_bool(request.form.get('merge_pages'), default=True)
+
+    excel_path = os.path.join(UPLOAD_FOLDER, filename)
+    pdf_path = os.path.join(UPLOAD_FOLDER, filename.rsplit('.', 1)[0] + '.pdf')
 
     try:
-        if 'file' not in request.files:
-            return jsonify({'error': '沒有文件上傳'}), 400
+        file.save(excel_path)
+        optimize_excel_for_printing(excel_path)
 
-        file = request.files['file']
-        if file.filename == '':
-            return jsonify({'error': '文件名為空'}), 400
+        result = subprocess.run(
+            [
+                LIBREOFFICE_PATH,
+                '--headless',
+                '--convert-to', 'pdf',
+                '--outdir', UPLOAD_FOLDER,
+                excel_path,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        print('LibreOffice stdout:', result.stdout)
+        print('LibreOffice stderr:', result.stderr)
 
-        filename = secure_filename(file.filename)
-        file_path = os.path.join(UPLOAD_FOLDER, filename)
-        file.save(file_path)
+        if not os.path.exists(pdf_path):
+            raise FileNotFoundError(f'PDF 轉檔失敗，找不到輸出檔案: {pdf_path}')
 
-        try:
-            optimize_excel_for_printing(file_path)
+        if POPPLER_PATH:
+            images = convert_from_path(pdf_path, dpi=300, poppler_path=POPPLER_PATH)
+        else:
+            images = convert_from_path(pdf_path, dpi=300)
 
-            # ===== 優化 5：降低 DPI 從 300 到 150 =====
-            images = convert_from_path(
-                file_path,
-                dpi=150,  # 從 300 降低到 150
-                poppler_path=POPPLER_PATH
-            )
+        if not images:
+            raise RuntimeError('PDF 已生成，但無法轉成圖片。')
 
-            pages = [clean_and_trim(img) for img in images]
-            merged_images = build_merge_ready_pages(images)
-            merged_image = combine_images_vertically(merged_images)
+        # pages[]：保留舒適邊界
+        page_preview_images = [clean_and_trim(img, vertical_padding=18) for img in images]
+        page_data_urls = [image_to_data_url(img) for img in page_preview_images]
 
-            pages_data = [image_to_data_url(page, quality=75) for page in pages]
-            merged_data = image_to_data_url(merged_image, quality=75) if merged_image else None
+        response = {
+            'message': '轉檔成功',
+            'pages': page_data_urls,
+            'page_count': len(page_data_urls),
+            'merge_pages': merge_pages,
+        }
 
-            return jsonify({
-                'pages': pages_data,
-                'merged_image': merged_data,
-                'page_count': len(pages)
-            })
+        if len(page_data_urls) == 1:
+            response['image'] = page_data_urls[0]
+            response['notice'] = '單頁輸出。'
+        else:
+            if merge_pages:
+                merge_ready_images = build_merge_ready_pages(images)
+                merged = combine_images_vertically(merge_ready_images)
+                merged_data_url = image_to_data_url(merged)
+                response['merged_image'] = merged_data_url
+                response['image'] = merged_data_url
+            else:
+                response['image'] = page_data_urls[0]
 
-        finally:
-            # ===== 優化 6：立即清理臨時文件 =====
-            if os.path.exists(file_path):
-                try:
-                    os.remove(file_path)
-                except Exception as e:
-                    print(f"刪除文件失敗 {file_path}: {e}")
+            response['notice'] = '此檔案為多頁內容。正式顯示請使用 pages[] 分頁渲染；image/merged_image 僅為相容舊前端或預覽。'
 
-    except subprocess.TimeoutExpired:
-        return jsonify({'error': 'LibreOffice 轉換超時'}), 500
+        return jsonify(response)
+
+    except subprocess.CalledProcessError as e:
+        print('\n❌ LibreOffice 轉檔錯誤')
+        print('returncode:', e.returncode)
+        print('stdout:', e.stdout)
+        print('stderr:', e.stderr)
+        return jsonify({'error': f'LibreOffice 轉檔失敗: {e.stderr or e.stdout or str(e)}'}), 500
+
     except Exception as e:
+        print(f'\n❌ 轉檔錯誤: {e}\n')
         return jsonify({'error': str(e)}), 500
+
     finally:
-        # 釋放並發鎖
-        conversion_semaphore.release()
+        for path in [excel_path, pdf_path]:
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception as cleanup_error:
+                print(f'⚠️ 清理檔案失敗 {path}: {cleanup_error}')
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8080, debug=False)
+    app.run(port=8080, debug=True)
