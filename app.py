@@ -281,9 +281,9 @@ def convert_excel():
             raise FileNotFoundError(f'PDF 轉檔失敗，找不到輸出檔案: {pdf_path}')
 
         if POPPLER_PATH:
-            images = convert_from_path(pdf_path, dpi=180, poppler_path=POPPLER_PATH)
+            images = convert_from_path(pdf_path, dpi=100, poppler_path=POPPLER_PATH)
         else:
-            images = convert_from_path(pdf_path, dpi=180)
+            images = convert_from_path(pdf_path, dpi=100)
 
         if not images:
             raise RuntimeError('PDF 已生成，但無法轉成圖片。')
