@@ -247,8 +247,13 @@
     </div>
 
     <script>
+        let uploadedExcelBaseName = 'Quotation_Merged_Result';
+
         async function uploadExcel(file) {
             if (!file) return;
+
+            // 記住目前上傳的 Excel 檔名（去掉副檔名）
+            uploadedExcelBaseName = file.name.replace(/\.[^.]+$/, '');
 
             // 🌟 強制阻擋 .xls 格式並跳出警告 🌟
             if (!file.name.match(/\.(xlsx)$/i)) {
@@ -445,7 +450,7 @@
                 const imgData2 = canvas2.toDataURL('image/jpeg', 0.98);
                 pdf.addImage(imgData2, 'JPEG', 0, 0, 800, 1130);
 
-                pdf.save('Quotation_Merged_Result.pdf');
+                pdf.save(`${uploadedExcelBaseName}.pdf`);
 
             } catch (error) {
                 console.error("PDF 匯出錯誤:", error);
